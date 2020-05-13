@@ -74,12 +74,6 @@ plugins:
   - serverless-pseudo-parameters
 
 resources:
-  Parameters:
-    ImageUrl:
-      Type: String
-      Default: stepfunctiontest:latest
-      Description: The url of a docker image that contains the application process that
-                   will handle the traffic for this service
   Resources:
     ComputeEnvironment:
       Type: AWS::Batch::ComputeEnvironment
@@ -120,7 +114,7 @@ resources:
             - ls
           Memory: 128
           Vcpus: 1
-          Image: '#{AWS::AccountId}.dkr.ecr.#{AWS::Region}.amazonaws.com/#{ImageUrl}'
+          Image: 'ryfeus/test-aws-ecr:latest'
         JobDefinitionName: '#{AWS::StackName}-JobDefinition'
         RetryStrategy: 
           Attempts: 1
