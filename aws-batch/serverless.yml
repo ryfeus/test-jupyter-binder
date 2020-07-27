@@ -79,20 +79,23 @@ resources:
       Type: AWS::Batch::ComputeEnvironment
       Properties:
         Type: MANAGED
-        ServiceRole: arn:aws:iam::#{AWS::AccountId}:role/service-role/AWSBatchServiceRole
+        # ServiceRole: !Ref AWSBatchServiceRole
+        ServiceRole: AWSBatchServiceRole
         ComputeEnvironmentName: '#{AWS::StackName}-ComputeEnvironment'
         ComputeResources:
           MaxvCpus: 128
           SecurityGroupIds:
             - !Ref BatchSecurityGroup
-          Type: SPOT
-          SpotIamFleetRole: arn:aws:iam::#{AWS::AccountId}:role/aws-ec2-spot-fleet-tagging-role
+          Type: EC2
+          # Type: SPOT
+          SpotIamFleetRole: !GetAtt EC2SpotFleetTaggingRole.Arn
           Subnets:
             - !Ref PublicSubnet1
           MinvCpus: 0
-          InstanceRole: ecsInstanceRole
+          InstanceRole: !Ref ECSInstanceRole
           InstanceTypes:
             - c5.large
+            # - p2.xlarge
           Tags: {"Name": "Batch Instance - #{AWS::StackName}"}
           DesiredvCpus: 0
         State: ENABLED
@@ -112,9 +115,14 @@ resources:
         ContainerProperties: 
           Command: 
             - ls
+          Image: 'ryfeus/test-aws-ecr:latest'
           Memory: 128
           Vcpus: 1
-          Image: 'ryfeus/test-aws-ecr:latest'
+          # Memory: 60000
+          # Vcpus: 4
+          # ResourceRequirements:
+          #   - Type: 'GPU'
+          #     Value: 1
         JobDefinitionName: '#{AWS::StackName}-JobDefinition'
         RetryStrategy: 
           Attempts: 1
@@ -170,3 +178,54 @@ resources:
         GroupDescription: Allow all ports
         VpcId:
           Ref: PubPrivateVPC
+    EC2SpotFleetTaggingRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: EC2SpotFleetTaggingRole
+        AssumeRolePolicyDocument:
+          Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - 'spotfleet.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+        Path: /service-role/
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AmazonEC2SpotFleetTaggingRole
+    AWSBatchServiceRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: AWSBatchCustomServiceRole
+        AssumeRolePolicyDocument:
+          Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - 'batch.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+        Path: /service-role/
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AWSBatchServiceRole
+    ECSInstanceRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: ECSInstanceProfileRole
+        AssumeRolePolicyDocument:
+          Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - 'ec2.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+        Path: /service-role/
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+    ECSInstanceProfile:
+      Type: AWS::IAM::InstanceProfile
+      Properties: 
+        InstanceProfileName: ECSInstanceProfileRole
+        Roles: 
+          - !Ref ECSInstanceRole
