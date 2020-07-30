@@ -1,4 +1,4 @@
-service: StepFuncBatchTest
+service: StepFuncBatchTest11
 
 frameworkVersion: ">=1.2.0 <2.0.0"
 
@@ -8,23 +8,35 @@ provider:
   runtime: python3.6
   memorySize: 128
   timeout: 10
+  iamRoleStatements:
+    # Allow Lambda to download and upload files to S3 bucket
+    - Effect: Allow
+      Action:
+        - 's3:ListBucket'
+      Resource: 'arn:aws:s3:::#{S3BucketName}'
+    - Effect: Allow
+      Action:
+        - 's3:PutObject'
+        - 's3:GetObject'
+      Resource: 'arn:aws:s3:::#{S3BucketName}/*'
 
 package:
   exclude:
     - node_modules/**
 
 functions:
-  branch:
-    handler: index.handlerBranch
   map:
     handler: index.handlerMap
   reduce:
     handler: index.handlerReduce
+  publisher:
+    handler: index.handlerPublisher
 
 
 stepFunctions:
   stateMachines:
     HelloWorldStepFunction:
+      role: !GetAtt StateMachineRole.Arn
       events:
         - http:
             path: startFunction
@@ -34,39 +46,46 @@ stepFunctions:
         StartAt: StartStepF
         States:
           StartStepF:
+            Type: Pass
+            Result:
+              s3_bucket: '#{S3BucketName}'
+            ResultPath: "$.state_params"
+            Next: PrepareMapStepF
+          PrepareMapStepF:
             Type: Task
             Resource: arn:aws:lambda:#{AWS::Region}:#{AWS::AccountId}:function:${self:service}-${opt:stage}-map
-            Next: BatchStep
-          BatchStep:
-            Type: Task
-            Resource: arn:aws:states:::batch:submitJob.sync
-            Parameters:
-              JobName: TestStep
-              JobDefinition: "#{JobDefinition}"
-              JobQueue: "#{JobQueue}"
-              ContainerOverrides:
-                Command:
-                  - 'app/exec'
-            Next: Parallel
-          Parallel:
-            Type: Parallel
-            Next: EndStepF
-            Branches:
-              - StartAt: Branch1
-                States:
-                  Branch1:
-                    Type: Task
-                    Resource: arn:aws:lambda:#{AWS::Region}:#{AWS::AccountId}:function:${self:service}-${opt:stage}-branch
-                    End: True
-              - StartAt: Branch2
-                States:
-                  Branch2:
-                    Type: Task
-                    Resource: arn:aws:lambda:#{AWS::Region}:#{AWS::AccountId}:function:${self:service}-${opt:stage}-branch
-                    End: True
-          EndStepF:
+            Next: MapStep
+          MapStep:
+            Type: Map
+            ItemsPath: "$.tasks"
+            Iterator:
+              StartAt: BatchStep
+              States:
+                BatchStep:
+                  Type: Task
+                  Resource: arn:aws:states:::batch:submitJob.sync
+                  Parameters:
+                    JobName: TrainStep
+                    JobDefinition: "#{JobDefinition}"
+                    JobQueue: "#{JobQueue}"
+                    ContainerOverrides:
+                      Command.$: "$.task_command"
+                  End: true
+            ResultPath: "$.map_result"
+            Retry:
+              - ErrorEquals:
+                - "States.ALL"
+                IntervalSeconds: 10
+                MaxAttempts: 2
+                BackoffRate: 2
+            Next: ReduceStepF
+          ReduceStepF:
             Type: Task
             Resource: arn:aws:lambda:#{AWS::Region}:#{AWS::AccountId}:function:${self:service}-${opt:stage}-reduce
+            Next: PublishStepF
+          PublishStepF:
+            Type: Task
+            Resource: arn:aws:lambda:#{AWS::Region}:#{AWS::AccountId}:function:${self:service}-${opt:stage}-publisher
             End: true
 
 plugins:
@@ -74,16 +93,24 @@ plugins:
   - serverless-pseudo-parameters
 
 resources:
+  Parameters:
+    ImageName:
+      Type: String
+      Default: ryfeus/serverless-for-deep-learning:latest
+      Description: The name of a docker image that contains the training code
+    S3BucketName:
+      Type: String
+      Default: serverless-for-deep-learning
+      Description: S3 bucket which we will use to store hyperparameters and models
   Resources:
     ComputeEnvironment:
       Type: AWS::Batch::ComputeEnvironment
       Properties:
         Type: MANAGED
-        # ServiceRole: !Ref AWSBatchServiceRole
         ServiceRole: AWSBatchServiceRole
         ComputeEnvironmentName: '#{AWS::StackName}-ComputeEnvironment'
         ComputeResources:
-          MaxvCpus: 128
+          MaxvCpus: 4
           SecurityGroupIds:
             - !Ref BatchSecurityGroup
           Type: EC2
@@ -94,8 +121,8 @@ resources:
           MinvCpus: 0
           InstanceRole: !Ref ECSInstanceRole
           InstanceTypes:
-            - c5.large
-            # - p2.xlarge
+            - p2.xlarge
+            # - c5.large
           Tags: {"Name": "Batch Instance - #{AWS::StackName}"}
           DesiredvCpus: 0
         State: ENABLED
@@ -113,16 +140,15 @@ resources:
       Properties:
         Type: Container
         ContainerProperties: 
-          Command: 
-            - ls
-          Image: 'ryfeus/test-aws-ecr:latest'
-          Memory: 128
-          Vcpus: 1
-          # Memory: 60000
-          # Vcpus: 4
-          # ResourceRequirements:
-          #   - Type: 'GPU'
-          #     Value: 1
+          Image: '#{ImageName}'
+          JobRoleArn: !Ref ECSTaskRole
+          Memory: 60000
+          Vcpus: 4
+          ResourceRequirements:
+            - Type: 'GPU'
+              Value: 1
+          # Memory: 128
+          # Vcpus: 1
         JobDefinitionName: '#{AWS::StackName}-JobDefinition'
         RetryStrategy: 
           Attempts: 1
@@ -193,21 +219,6 @@ resources:
         Path: /service-role/
         ManagedPolicyArns:
           - arn:aws:iam::aws:policy/service-role/AmazonEC2SpotFleetTaggingRole
-    AWSBatchServiceRole:
-      Type: AWS::IAM::Role
-      Properties:
-        RoleName: AWSBatchCustomServiceRole
-        AssumeRolePolicyDocument:
-          Statement:
-          - Effect: Allow
-            Principal:
-              Service:
-                - 'batch.amazonaws.com'
-            Action:
-              - 'sts:AssumeRole'
-        Path: /service-role/
-        ManagedPolicyArns:
-          - arn:aws:iam::aws:policy/service-role/AWSBatchServiceRole
     ECSInstanceRole:
       Type: AWS::IAM::Role
       Properties:
@@ -229,3 +240,74 @@ resources:
         InstanceProfileName: ECSInstanceProfileRole
         Roles: 
           - !Ref ECSInstanceRole
+    # This is a role which is used by the code within tasks.
+    ECSTaskRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Statement:
+          - Effect: Allow
+            Principal:
+              Service: [ecs-tasks.amazonaws.com]
+            Action: ['sts:AssumeRole']
+        Path: /
+        Policies:
+          - PolicyName: AmazonECSTaskRolePolicy
+            PolicyDocument:
+              Statement:
+              # Allow the ECS tasks to download and upload files to S3 bucket
+              - Effect: Allow
+                Action:
+                  - 's3:ListBucket'
+                Resource: 'arn:aws:s3:::#{S3BucketName}'
+              - Effect: Allow
+                Action:
+                  - 's3:PutObject'
+                  - 's3:GetObject'
+                Resource: 'arn:aws:s3:::#{S3BucketName}/*'
+              # Allow the ECS tasks to put metrics to cloudwatch
+              - Effect: Allow
+                Action:
+                  - 'cloudwatch:PutMetricData'
+                Resource: '*'
+    StateMachineRole:
+      Type: AWS::IAM::Role
+      Properties:
+        Path: /states/
+        AssumeRolePolicyDocument:
+          Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - states.amazonaws.com
+            Action:
+              - sts:AssumeRole
+        Policies:
+          - PolicyName: StatePolicy
+            PolicyDocument:
+              Statement:
+              - Effect: Allow
+                Action:
+                  - 'lambda:InvokeFunction'
+                Resource:
+                  - 'arn:aws:lambda:#{AWS::Region}:#{AWS::AccountId}:function:${self:service}-dev-map'
+                  - 'arn:aws:lambda:#{AWS::Region}:#{AWS::AccountId}:function:${self:service}-dev-reduce'
+                  - 'arn:aws:lambda:#{AWS::Region}:#{AWS::AccountId}:function:${self:service}-dev-publisher'
+              - Effect: Allow
+                Action:
+                  - 'states:StartExecution'
+                  - 'states:DescribeExecution'
+                  - 'states:StopExecution'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'events:PutTargets'
+                  - 'events:PutRule'
+                  - 'events:DescribeRule'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'batch:SubmitJob'
+                  - 'batch:DescribeJobs'
+                  - 'batch:TerminateJob'
+                Resource: '*'
