@@ -8,17 +8,6 @@ provider:
   runtime: python3.7
   memorySize: 128
   timeout: 10
-  # iamRoleStatements:
-  #   # Allow Lambda to download and upload files to S3 bucket
-  #   - Effect: Allow
-  #     Action:
-  #       - 's3:ListBucket'
-  #     Resource: 'arn:aws:s3:::#{S3BucketName}'
-  #   - Effect: Allow
-  #     Action:
-  #       - 's3:PutObject'
-  #       - 's3:GetObject'
-  #     Resource: 'arn:aws:s3:::#{S3BucketName}/*'
 
 package:
   exclude:
@@ -87,10 +76,3 @@ stepFunctions:
 plugins:
   - serverless-step-functions
   - serverless-pseudo-parameters
-
-# resources:
-#   Parameters:
-#     S3BucketName:
-#       Type: String
-#       Default: course-pdl-inference
-#       Description: S3 bucket which we will use to store images
