@@ -1,4 +1,4 @@
-service: StepFuncBatchTest11
+service: DeepLearningTrainingGPU
 
 frameworkVersion: ">=1.2.0 <2.0.0"
 
@@ -96,12 +96,16 @@ resources:
   Parameters:
     ImageName:
       Type: String
-      Default: ryfeus/serverless-for-deep-learning:latest
+      Default: ${env:IMAGE_NAME} # ryfeus/serverless-for-deep-learning:cpu
       Description: The name of a docker image that contains the training code
     S3BucketName:
       Type: String
-      Default: serverless-for-deep-learning
+      Default: ${env:S3_BUCKET} # serverless-for-deep-learning
       Description: S3 bucket which we will use to store hyperparameters and models
+    ComputeType:
+      Type: String
+      Default: ${env:INSTANCE_TYPE} # EC2 or SPOT
+      Description: Type of instance which will be used
   Resources:
     ComputeEnvironment:
       Type: AWS::Batch::ComputeEnvironment
@@ -113,8 +117,7 @@ resources:
           MaxvCpus: 4
           SecurityGroupIds:
             - !Ref BatchSecurityGroup
-          Type: EC2
-          # Type: SPOT
+          Type: '#{ComputeType}'
           SpotIamFleetRole: !GetAtt EC2SpotFleetTaggingRole.Arn
           Subnets:
             - !Ref PublicSubnet1
@@ -122,7 +125,6 @@ resources:
           InstanceRole: !Ref ECSInstanceRole
           InstanceTypes:
             - p2.xlarge
-            # - c5.large
           Tags: {"Name": "Batch Instance - #{AWS::StackName}"}
           DesiredvCpus: 0
         State: ENABLED
@@ -147,8 +149,6 @@ resources:
           ResourceRequirements:
             - Type: 'GPU'
               Value: 1
-          # Memory: 128
-          # Vcpus: 1
         JobDefinitionName: '#{AWS::StackName}-JobDefinition'
         RetryStrategy: 
           Attempts: 1
